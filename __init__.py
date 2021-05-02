@@ -80,11 +80,12 @@ class openHABSkill(MycroftSkill):
 		refresh_tagged_items_intent = IntentBuilder("RefreshTaggedItemsIntent").require("RefreshTaggedItemsKeyword").build()
 		self.register_intent(refresh_tagged_items_intent, self.handle_refresh_tagged_items_intent)
 
-		onoff_status_intent = IntentBuilder("OnOff_StatusIntent").require("OnOffStatusKeyword").require("Command").require("Item").build()
-		self.register_intent(onoff_status_intent, self.handle_onoff_status_intent)
+		#Don't know why, but annotation seems to be better. Otherwise sometimes the command or item is empty.
+		#onoff_status_intent = IntentBuilder("OnOff_StatusIntent").require("OnOffStatusKeyword").require("Command").require("Item").build()
+		#self.register_intent(onoff_status_intent, self.handle_onoff_status_intent)
 
-		dimmer_status_intent = IntentBuilder("Dimmer_StatusIntent").require("DimmerStatusKeyword").require("Item").optionally("BrightPercentage").build()
-		self.register_intent(dimmer_status_intent, self.handle_dimmer_status_intent)
+		#dimmer_status_intent = IntentBuilder("Dimmer_StatusIntent").require("DimmerStatusKeyword").require("Item").optionally("BrightPercentage").build()
+		#self.register_intent(dimmer_status_intent, self.handle_dimmer_status_intent)
 
 		#what_status_intent = IntentBuilder("What_StatusIntent").require("WhatStatusKeyword").require("Item").require("RequestType").build()
 		#self.register_intent(what_status_intent, self.handle_what_status_intent)
@@ -99,7 +100,7 @@ class openHABSkill(MycroftSkill):
 		self.register_intent(list_items_intent, self.handle_list_items_intent)
 
 		self.settings_change_callback = self.handle_websettings_update
-
+		
 	def get_config(self, key):
 		return (self.settings.get(key) or self.config_core.get('openHABSkill', {}).get(key))
 
@@ -200,9 +201,20 @@ class openHABSkill(MycroftSkill):
 		dictLenght = str(len(self.lightingItemsDic) + len(self.switchableItemsDic) + len(self.currentTempItemsDic) + len(self.currentHumItemsDic) + len(self.currentThermostatItemsDic) + len(self.targetTemperatureItemsDic) + len(self.homekitHeatingCoolingModeDic))
 		self.speak_dialog('RefreshTaggedItems', {'number_item': dictLenght})
 
+	#Don't know why, but this is working better. Otherwise sometimes the command or item is empty.
+	@intent_handler(IntentBuilder("onoff_status_intent").require("OnOffStatusKeyword").require("Command").require("Item").build())
 	def handle_onoff_status_intent(self, message):
 		command = message.data.get('Command')
 		messageItem = message.data.get('Item')
+		
+		#translate command to openHab on or off
+		openhabCmd = command
+		if self.voc_match(command, 'On'):
+			openhabCmd = "on"
+		elif self.voc_match(command, 'Off'):
+			openhabCmd = "off"
+		else:
+			LOGGER.warning("Failed to translate command. Use on|off instead")
 
 		#We have to find the item to update from our dictionaries
 		self.lightingSwitchableItemsDic = dict()
@@ -212,10 +224,10 @@ class openHABSkill(MycroftSkill):
 		ohItem = self.findItemName(self.lightingSwitchableItemsDic, messageItem)
 
 		if ohItem != None:
-			if (command != "on") and (command != "off"):
+			if (openhabCmd != "on") and (openhabCmd != "off"):
 				self.speak_dialog('ErrorDialog')
 			else:
-				statusCode = self.sendCommandToItem(ohItem, command.upper())
+				statusCode = self.sendCommandToItem(ohItem, openhabCmd.upper())
 				if statusCode == 200:
 					self.speak_dialog('StatusOnOff', {'command': command, 'item': messageItem})
 				elif statusCode == 404:
@@ -228,11 +240,12 @@ class openHABSkill(MycroftSkill):
 			LOGGER.error("Item not found!")
 			self.speak_dialog('ItemNotFoundError')
 
+	@intent_handler(IntentBuilder("Dimmer_StatusIntent").require("DimmerStatusKeyword").require("Item").optionally("BrightPercentage").build())
 	def handle_dimmer_status_intent(self, message):
 		command = message.data.get('DimmerStatusKeyword')
 		messageItem = message.data.get('Item')
 		brightValue = message.data.get('BrightPercentage', None)
-
+		
 		statusCode = 0
 		newBrightValue = 0
 
