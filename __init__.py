@@ -19,6 +19,7 @@ from adapt.intent import IntentBuilder
 from mycroft.skills.core import MycroftSkill, intent_handler
 from mycroft.util.log import getLogger
 from rapidfuzz import fuzz
+from enum import Enum
 
 import requests
 import json
@@ -44,23 +45,30 @@ __author__ = 'mortommy'
 
 LOGGER = getLogger(__name__)
 
+class openHabItemType(Enum):
+	Unknown = 0
+	Light = 1
+	Switch = 2
+	Humidity = 3
+	Thermostat = 4
+	TargetTemperature = 5
+	CurrentTemperature = 6
+
+class openHabIntent(Enum):
+	Unknown = 0
+	OnOff = 1
+	Dimmer = 2
+
 class openHABSkill(MycroftSkill):
 
 	def __init__(self):
 		super(openHABSkill, self).__init__(name="openHABSkill")
 
-		self.command_headers = {"Content-type": "text/plain"}
-
 		self.polling_headers = {"Accept": "application/json"}
 
 		self.url = None
-		self.lightingItemsDic = dict()
-		self.switchableItemsDic = dict()
-		self.currentTempItemsDic = dict()
-		self.currentHumItemsDic = dict()
-		#self.currentThermostatItemsDic = dict()
-		self.targetTemperatureItemsDic = dict()
-		#self.homekitHeatingCoolingModeDic = dict()
+
+		self.openhabItems = dict()
 
 	def initialize(self):
 
@@ -93,6 +101,11 @@ class openHABSkill(MycroftSkill):
 		self.register_entity_file('requesttype.entity')
 		self.register_intent_file('what.status.intent',self.handle_what_status_intent)
 
+		self.register_entity_file('dimmer_percentage.entity')
+		self.register_intent_file('ohIntentSetDimmerValue.intent',self.handle_dimmer_status_intent)
+		
+		self.register_intent_file('ohIntentBrighterDarker.intent',self.handle_dimmer_lighter_darker_intent)
+
 		setTemp_status_intent = IntentBuilder("SetTemp_StatusIntent").require("ThermostatStatusKeyword").require("Item").require("TempValue").build()
 		self.register_intent(setTemp_status_intent, self.handle_setTemp_status_intent)
 
@@ -114,14 +127,8 @@ class openHABSkill(MycroftSkill):
 	def getTaggedItems(self):
 		#find all the items tagged Lighting and Switchable from openHAB
 		#the labeled items are stored in dictionaries
-
-		self.lightingItemsDic = {}
-		self.switchableItemsDic = {}
-		self.currentTempItemsDic = {}
-		self.currentHumItemsDic = {}
-		self.currentThermostatItemsDic = {}
-		self.targetTemperatureItemsDic = {}
-		self.homekitHeatingCoolingModeDic = {}
+		#collection of openhab items
+		self.openhabItems = {}
 
 		if self.url == None:
 			LOGGER.error("Configuration needed!")
@@ -129,38 +136,70 @@ class openHABSkill(MycroftSkill):
 		else:			
 			requestUrl = self.url+"/items?recursive=false"
 
-			try: 
-				req = requests.get(requestUrl, headers=self.polling_headers)
-				if req.status_code == 200:
-					json_response = req.json()
-					for x in range(0,len(json_response)):
-						if ("Lighting" in json_response[x]['tags']):
-							self.lightingItemsDic.update({json_response[x]['name']: json_response[x]['label']})
-						elif ("Switchable" in json_response[x]['tags']):
-							self.switchableItemsDic.update({json_response[x]['name']: json_response[x]['label']})
-						elif ("CurrentTemperature" in json_response[x]['tags']):
-							self.currentTempItemsDic.update({json_response[x]['name']: json_response[x]['label']})
-						elif ("CurrentHumidity" in json_response[x]['tags']):
-							self.currentHumItemsDic.update({json_response[x]['name']: json_response[x]['label']})
-						elif ("Thermostat" in json_response[x]['tags']):
-							self.currentThermostatItemsDic.update({json_response[x]['name']: json_response[x]['label']})
-						elif ("TargetTemperature" in json_response[x]['tags']):
-							self.targetTemperatureItemsDic.update({json_response[x]['name']: json_response[x]['label']})
-						elif ("homekit:HeatingCoolingMode" in json_response[x]['tags']):
-							self.homekitHeatingCoolingModeDic.update({json_response[x]['name']: json_response[x]['label']})
-						else:
-							pass
-				else:
-					LOGGER.error("Some issues with the command execution!")
-					self.speak_dialog('GetItemsListError')
+			#try: 
+			req = requests.get(requestUrl, headers=self.polling_headers)
+			if req.status_code == 200:
+				json_response = req.json()
+				for x in range(0,len(json_response)):
 
-			except KeyError:
-						pass
-			except Exception:
-					LOGGER.error("Some issues with the command execution!")
-					self.speak_dialog('GetItemsListError')
+					ohItemType = openHabItemType.Unknown
+
+					if ("Lighting" in json_response[x]['tags']):
+						ohItemType = openHabItemType.Light
+					elif ("Switchable" in json_response[x]['tags']):
+						ohItemType = openHabItemType.Switch
+					elif ("CurrentTemperature" in json_response[x]['tags']):
+						ohItemType = openHabItemType.CurrentTemperature
+					elif ("CurrentHumidity" in json_response[x]['tags']):
+						ohItemType = openHabItemType.Humidity
+					elif ("Thermostat" in json_response[x]['tags']):
+						ohItemType = openHabItemType.Thermostat
+					elif ("TargetTemperature" in json_response[x]['tags']):
+						ohItemType = openHabItemType.TargetTemperature
+					elif ("homekit:HeatingCoolingMode" in json_response[x]['tags']):
+						ohItemType = openHabItemType.Light
+					else:
+						next
+					
+					ohItem = OpenHabItem(json_response[x]['name'], json_response[x]['label'], "", ohItemType)
+					self.openhabItems.update({json_response[x]['label'] : ohItem})
+
+			else:
+				LOGGER.error("Some issues with the command execution!")
+				self.speak_dialog('GetItemsListError')
+
+			#except KeyError:
+			#			pass
+			#except Exception:
+			#		LOGGER.error("Some issues with the command execution!")
+			#		self.speak_dialog('GetItemsListError')
+
+	def findItemNameExt(self, messageItem):
+		if messageItem == None:
+			self.speak_dialog('ItemNotFoundError')
+			return None
+		
+		bestScore = 0
+		score = 0
+		bestItem = None
+
+		try:
+			for itemName, ohItem in list(self.openhabItems.items()):
+				score = fuzz.ratio(messageItem, ohItem.Label, score_cutoff=bestScore)
+				if score > bestScore:
+					bestScore = score
+					bestItem = ohItem
+		except KeyError:
+                    pass
+
+		return bestItem
+
 
 	def findItemName(self, itemDictionary, messageItem):
+
+		if messageItem == None:
+			self.speak_dialog('ItemNotFoundError')
+			return None
 
 		bestScore = 0
 		score = 0
@@ -201,7 +240,7 @@ class openHABSkill(MycroftSkill):
 		dictLenght = str(len(self.lightingItemsDic) + len(self.switchableItemsDic) + len(self.currentTempItemsDic) + len(self.currentHumItemsDic) + len(self.currentThermostatItemsDic) + len(self.targetTemperatureItemsDic) + len(self.homekitHeatingCoolingModeDic))
 		self.speak_dialog('RefreshTaggedItems', {'number_item': dictLenght})
 
-	#Don't know why, but this is working better. Otherwise sometimes the command or item is empty.
+	
 	@intent_handler(IntentBuilder("onoff_status_intent").require("OnOffStatusKeyword").require("Command").require("Item").build())
 	def handle_onoff_status_intent(self, message):
 		command = message.data.get('Command')
@@ -216,18 +255,14 @@ class openHABSkill(MycroftSkill):
 		else:
 			LOGGER.warning("Failed to translate command. Use on|off instead")
 
-		#We have to find the item to update from our dictionaries
-		self.lightingSwitchableItemsDic = dict()
-		self.lightingSwitchableItemsDic.update(self.lightingItemsDic)
-		self.lightingSwitchableItemsDic.update(self.switchableItemsDic)
-
-		ohItem = self.findItemName(self.lightingSwitchableItemsDic, messageItem)
-
-		if ohItem != None:
+		ohItem = self.findItemNameExt(messageItem)
+		if (ohItem != None) & (ohItem.SupportsIntent(openHabIntent.OnOff)):
 			if (openhabCmd != "on") and (openhabCmd != "off"):
 				self.speak_dialog('ErrorDialog')
 			else:
-				statusCode = self.sendCommandToItem(ohItem, openhabCmd.upper())
+				updatedCmd = ohItem.updateCommandForIntent(openHabIntent.OnOff, openhabCmd)
+
+				statusCode = ohItem.sendCommandToItem(self.url, updatedCmd)
 				if statusCode == 200:
 					self.speak_dialog('StatusOnOff', {'command': command, 'item': messageItem})
 				elif statusCode == 404:
@@ -240,53 +275,77 @@ class openHABSkill(MycroftSkill):
 			LOGGER.error("Item not found!")
 			self.speak_dialog('ItemNotFoundError')
 
-	@intent_handler(IntentBuilder("Dimmer_StatusIntent").require("DimmerStatusKeyword").require("Item").optionally("BrightPercentage").build())
+	#since there is a bug with optionally parameters it will be better to split this up and only have required parameters
+	#@intent_handler(IntentBuilder("Set_DimmerValue").require("DimmerStatusKeyword").require("Item").optionally("BrightPercentage").build())
+	#@intent_handler("SetDimmerValue.intent")
 	def handle_dimmer_status_intent(self, message):
-		command = message.data.get('DimmerStatusKeyword')
-		messageItem = message.data.get('Item')
-		brightValue = message.data.get('BrightPercentage', None)
+		LOGGER.debug("Intend Set_DimmerValue called")
+		messageItem = message.data.get('ohitem')
+		brightValue = message.data.get('dimmer_percentage')
+
+		LOGGER.debug("Item:{} Bright value: {}".format(messageItem, brightValue))
+
+		dimmerItem = self.findItemNameExt(messageItem)
 		
-		statusCode = 0
-		newBrightValue = 0
+		if dimmerItem.Type != openHabItemType.Light:
+			self.speak_dialog('ItemNotFoundError')
+			return
 
-		ohItem = self.findItemName(self.lightingItemsDic, messageItem)
-
-		if ohItem != None:
-			#if ((command == "set") or (command == "imposta") or (command == "setze") or (command == "pone")):
-			if self.voc_match(command, 'Set'):
-				if ((brightValue == None) or (int(brightValue) < 0) or (int(brightValue) > 100)):
-					self.speak_dialog('ErrorDialog')
-				else:
-					statusCode = self.sendCommandToItem(ohItem, brightValue)
+		if ((brightValue == None) or (int(brightValue) < 0) or (int(brightValue) > 100)):
+			self.speak_dialog('ErrorDialog')
+		else:
+			if dimmerItem != None:
+				statusCode = dimmerItem.sendCommandToItem(self.url, brightValue)
+				self.handle_DimmerStatusCode(statusCode, messageItem)
 			else:
-				#find current item statusCode
-				state = self.getCurrentItemStatus(ohItem)
-				if (state != None):
-					#dim or brighten the value
-					curBrightList = state.split(',')
-					curBright = int(curBrightList[len(curBrightList)-1])
+				self.speak_dialog('ItemNotFoundError')
 
-					if(brightValue == None):
-						brightValue = "10"
 
-					#if ((command == "dim") or (command == "abbassa") or (command == "dimme") or (command == "oscurece")):
-					if self.voc_match(command, 'Dim'):
-						newBrightValue = curBright-(int(brightValue))
-					else:
-						newBrightValue = curBright+(int(brightValue))
+	def handle_dimmer_lighter_darker_intent(self, message):
+		LOGGER.debug("Intend handle_dimmer_lighter_darker_intent called")
+		messageItem = message.data.get('ohitem')
 
-					if (newBrightValue < 0):
-						newBrightValue = 0
-					elif (newBrightValue > 100):
-						newBrightValue = 100
-					else:
-						pass
+#		if command == None:
+		utterance = message.utterance_remainder()
+		word_list = utterance.split()  # list of words
+		command = word_list[-1]
 
-					#send command to item
-					statusCode = self.sendCommandToItem(ohItem, str(newBrightValue))
+		LOGGER.debug("Item: {} command: {} utternaceRemainder: {}".format(messageItem, command, utterance))
+
+		dimmerItem = self.findItemNameExt(messageItem)
+		
+		if dimmerItem.Type != openHabItemType.Light:
+			self.speak_dialog('ItemNotFoundError')
+			return
+
+		if dimmerItem != None:
+			state = dimmerItem.getCurrentStatus(self.url)
+			if (state != None):
+				#dim or brighten the value
+				curBrightList = state.split(',')
+				curBright = int(curBrightList[len(curBrightList)-1])
+
+				brightValue = "10"
+
+				if self.voc_match(command, 'Dim'):
+					newBrightValue = curBright-(int(brightValue))
+				else:
+					newBrightValue = curBright+(int(brightValue))
+
+				if (newBrightValue < 0):
+					newBrightValue = 0
+				elif (newBrightValue > 100):
+					newBrightValue = 100
 				else:
 					pass
 
+				#send command to item
+				statusCode = dimmerItem.sendCommandToItem(self.url, str(newBrightValue))
+				self.handle_DimmerStatusCode(statusCode, messageItem)
+			else:
+				pass
+
+	def handle_DimmerStatusCode(self, statusCode, messageItem):
 			if statusCode == 200:
 				self.speak_dialog('StatusDimmer', {'item': messageItem})
 			elif statusCode == 404:
@@ -295,10 +354,6 @@ class openHABSkill(MycroftSkill):
 			else:
 				LOGGER.error("Some issues with the command execution!")
 				self.speak_dialog('CommunicationError')
-
-		else:
-			LOGGER.error("Item not found!")
-			self.speak_dialog('ItemNotFoundError')
 
 	def handle_what_status_intent(self, message):
 
@@ -373,17 +428,17 @@ class openHABSkill(MycroftSkill):
 			LOGGER.error("Item not found!")
 			self.speak_dialog('ItemNotFoundError')
 
-	def sendStatusToItem(self, ohItem, command):
-		requestUrl = self.url+"/items/%s/state" % (ohItem)
-		req = requests.put(requestUrl, data=command, headers=self.command_headers)
+	# def sendStatusToItem(self, ohItem, command):
+	# 	requestUrl = self.url+"/items/%s/state" % (ohItem)
+	# 	req = requests.put(requestUrl, data=command, headers=self.command_headers)
 
-		return req.status_code
+	# 	return req.status_code
 
-	def sendCommandToItem(self, ohItem, command):
-		requestUrl = self.url+"/items/%s" % (ohItem)
-		req = requests.post(requestUrl, data=command, headers=self.command_headers)
+	# def sendCommandToItem(self, ohItem, command):
+	# 	requestUrl = self.url+"/items/%s" % (ohItem)
+	# 	req = requests.post(requestUrl, data=command, headers=self.command_headers)
 
-		return req.status_code
+	# 	return req.status_code
 
 	def getCurrentItemStatus(self, ohItem):
 		requestUrl = self.url+"/items/%s/state" % (ohItem)
@@ -408,3 +463,68 @@ class openHABSkill(MycroftSkill):
 
 def create_skill():
     return openHABSkill()
+
+class OpenHabItem() :
+	def __init__(self, name, label, location, ItemType) :
+		self.Name = name
+		self.Label = label
+		self.Location = location
+		self.Type = ItemType
+		self.command_headers = {"Content-type": "text/plain"}
+
+	def SupportsIntent(self, intent):
+
+		itemSupportsIntent = False
+
+		if self.Type == openHabItemType.Light:
+			if (intent == openHabIntent.OnOff) | (intent == openHabIntent.Dimmer):
+				itemSupportsIntent = True
+		if self.Type == openHabItemType.Switch:
+			if (intent == openHabIntent.OnOff):
+				itemSupportsIntent = True
+#		if self.Type == openHabItemType.Humidity:		
+#		if self.Type == openHabItemType.Thermostat:
+#		if self.Type == openHabItemType.TargetTemperature:
+#		if self.Type == openHabItemType.CurrentTemperature:
+		return itemSupportsIntent
+
+	def sendStatusToItem(self, openHabUrl, command):
+		requestUrl = openHabUrl+"/items/%s/state" % (self.Name)
+		req = requests.put(requestUrl, data=command, headers=self.command_headers)
+
+		return req.status_code
+
+	def sendCommandToItem(self, openHabUrl, command):
+		requestUrl = openHabUrl+"/items/%s" % (self.Name)
+		req = requests.post(requestUrl, data=command, headers=self.command_headers)
+
+		return req.status_code
+
+	def updateCommandForIntent(self, intent, command):
+		if intent == openHabIntent.OnOff:
+			if self.Type == openHabItemType.Light:
+				if command == "off":
+					return "0"
+				elif command == "on":
+					return "100"				
+			else:
+				return command.upper()
+		return command
+
+	def getCurrentStatus(self, openHabUrl):
+		requestUrl = openHabUrl+"/items/%s/state" % (self.Name)
+		state = None
+
+		try:
+			req = requests.get(requestUrl, headers=self.command_headers)
+
+			if req.status_code == 200:
+				state = req.text
+			else:
+				LOGGER.error("Some issues with the command execution!")
+				self.speak_dialog('CommunicationError')
+
+		except KeyError:
+			pass
+
+		return state
